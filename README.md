@@ -1,7 +1,14 @@
-# Absenteeism
+# Absenteeism Interactive Report 🏥
 
- Report -in Spanish- on absenteesim (patients missing their appointments) in the Buenos Aires public healthcare system.
- 
- All datasets are fake (i.e., generated).
- 
- See the rendered HTML page from the R-Markdown file [here](https://2exp3.github.io/absenteeism/).
+Interactive report (in Spanish) that describes [**absenteesim**](https://en.wikipedia.org/wiki/Absenteeism) -patients missing their appointments- in the public healthcare system of Buenos Aires City, Argentina :argentina:.
+
+This [R-Markdown](https://rmarkdown.rstudio.com/) report showcases the use of:
+- 🗺️ interactive maps (with [`leaflet`](https://rstudio.github.io/leaflet/)).
+- 📊 📈 interactive bar and lineplots (with [`plotly`](https://plotly.com/r/)).
+- 👤 icons for [*personograph*-like](https://github.com/joelkuiper/personograph) charts (with [`fontawesome`](https://github.com/rstudio/fontawesome)).
+- 🔀 section [cross-referencing](https://bookdown.org/yihui/bookdown/cross-references.html).
+- 📄 [*readthedoc* format](https://github.com/juba/rmdformats).
+
+Click [**here**](https://2exp3.github.io/absenteeism/) to see the rendered *interactive* HTML page from the [R-Markdown file](https://github.com/2exp3/absenteeism/blob/main/absenteeism.Rmd).
+
+Note: All used datasets are *fake* (i.e., generated).
