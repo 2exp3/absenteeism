@@ -8,6 +8,7 @@ This [R-Markdown](https://rmarkdown.rstudio.com/) report showcases the use of:
 - 👤 icons for [*personograph*-like](https://github.com/joelkuiper/personograph) charts (with [`fontawesome`](https://github.com/rstudio/fontawesome)).
 - 🔀 section [cross-referencing](https://bookdown.org/yihui/bookdown/cross-references.html).
 - 📄 [*readthedoc* format](https://github.com/juba/rmdformats).
+- 📉 noisy-data smoothing ([rolling-averages](https://en.wikipedia.org/wiki/Moving_average) and [splines](https://en.wikipedia.org/wiki/Spline_(mathematics))).
 
 Click [**here**](https://2exp3.github.io/absenteeism/) to see the rendered *interactive* HTML page from the [R-Markdown file](https://github.com/2exp3/absenteeism/blob/main/absenteeism.Rmd).
 
