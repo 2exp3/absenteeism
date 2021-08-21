@@ -1,0 +1,879 @@
+---
+title: "Ausentismo en los efectores públicos de atención primaria de la Ciudad Autónoma de Buenos Aires"
+author: "Agustín Perez Santangelo"
+date: "23/07/2021"
+output:
+  rmdformats::readthedown:
+    number_sections: false
+    self_contained: true
+    toc-depth: 4
+    thumbnails: false
+    lightbox: true
+    use_bookdown: false
+    highlight: tango
+fontsize: 16pt
+
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+```
+
+```{r pkgs, include=FALSE}
+
+library(tidyverse)
+library(lubridate)
+library(glue)
+library(data.table)
+library(plotly)
+library(sf)
+library(leaflet)
+library(htmltools)
+library(blastula)
+library(fontawesome)
+library(waffle)
+library(emojifont)
+library(showtext)
+library(extrafont)
+
+```
+La ausencia de los pacientes a sus turnos médicos ---***ausentismo***--- impacta tanto en los pacientes como en el sistema de salud:
+
+-   afecta la **calidad** y el **acceso** a la atención médica
+-   dificulta la continuidad de la atención
+-   genera grandes **pérdidas económicas** para las instituciones por la **subutilización** de recursos asignados a la atención
+
+Describir el fenómeno de ausentismo podría ayudar a **mejorar la calidad** de la atención y los resultados de la atención primaria de salud en el sector público.
+
+
+Vamos a describir el ausentismo en el período **06/2016 - 12/2018**`r fa("far fa-calendar", fill = "darkslategray", height = "17px")`.
+
+
+```{r, data, include=FALSE}
+
+# los datasets tienen que estar en una subcarpeta "datasets", respecto del directorio donde esta este archivo Rmd.
+pacientes = fread("./datasets/pacientes_muestra.csv", encoding = "UTF-8")
+turnos    = fread("./datasets/turnos_muestra.csv", encoding = "UTF-8")
+efectores = fread("./datasets/efectores_muestra.csv", encoding = "UTF-8")
+ap        = fread("./datasets/ap_muestra.csv", encoding = "UTF-8")
+
+colores_genero =  c("#6dbcdb", "#fc4349")
+
+```
+
+```{r, funciones, include = FALSE}
+get_edad = function(fecha_nac, hoy = today()) {
+  ifelse(month(fecha_nac)<month(hoy),
+         year(hoy)-year(fecha_nac), 
+         ifelse(day(fecha_nac)<day(hoy),
+                year(hoy)-year(fecha_nac),
+                year(hoy)-year(fecha_nac)-1))
+}
+
+get_grupo_edad = function(edad, size_grupo = 5, limite = 100){
+  ifelse(edad >= limite,
+         glue("{limite}+"),
+         glue("{edad - edad%%size_grupo}-{edad - edad%%size_grupo + 4}"))
+}
+
+make_html_plot = function(porcentaje, width = 1.6, height = 0.25){
+  plt = 
+    porcentaje %>% 
+    enframe(value = "P") %>% 
+    ggplot(aes(x = 0, y = P))+
+    geom_col(aes(x = 0, y = 100), fill = "#fc4349") +
+    geom_col(fill  = "#6dbcdb")+
+    annotate(geom  = "text",x = c(0, 0), y = c(15, 85),
+             label = paste0(c(porcentaje, (100-porcentaje)),"%") ,
+             color = "white", size = 7)+
+    coord_flip()+
+    theme_void()
+  
+  add_ggplot(plot_object = plt, width = width, height = height)
+}
+
+make_iconos = function(tipo, color){
+  fa(tipo, fill = color, height = "15px")
+}
+
+```
+```{r epigrafes, include=FALSE}
+fig_caption = captioner::captioner(prefix = "Fig")
+fig_caption("piramide", 
+            enc2utf8("Porcentaje de la población a la que se le otorgó por lo menos un turno, según edad y género."))
+fig_caption("mapa_comuna", 
+            enc2utf8("Distribución geográfica de la población a la que se le otorgó por lo menos un turno."))
+
+fig_caption("timeline_turnos", 
+            enc2utf8("Turnos otorgados globalmente (calculado como el promedio semanal móvil diario en todos los efectores)."))
+fig_caption("timeline_turnos_ef", 
+            enc2utf8("Turnos otorgados por efector, identificados según area programática."))
+
+
+fig_caption("timeline_ausentismo", 
+            enc2utf8("Porcentaje diario global de pacientes que se ausentaron a su turno (ausentismo)."))
+
+fig_caption("plot_turnos_prog",
+            enc2utf8("Porcentaje de ausentismo según tipo de turno."))
+
+
+fig_caption("prog_timeline", enc2utf8("Porcentaje de ausentismo según tipo de turno, en el tiempo."))
+
+fig_caption("ausent_prog_ef", enc2utf8("Porcentaje de ausentismo de turnos programados por efector, en el tiempo."))
+
+fig_caption("mapa_ap", 
+            enc2utf8("Porcentaje de ausentismo de turnos programados por area programática."))
+
+
+fig_caption("distribucion_tat", 
+            enc2utf8("Distribución de tiempo al turno programado para turnos ausentes y presentes."))
+
+
+fig_caption("ausent_tiempo", 
+            enc2utf8("Relación entre el tiempo al turno programado y el porcentaje de ausentismo."))
+
+```
+
+```{r, filtro_fecha, include=FALSE}
+# hay datos de turnos que son del 2019, los saco y saco los datos de pacientes que no estan en la nueva base filtrada
+
+turnos_f =
+  turnos %>% 
+  mutate(date_otorgo = as_date(fecha_que_se_otorgo)) %>% 
+  filter(fecha_que_se_otorgo < ymd("2019-01-01")) 
+
+pacientes_f = 
+  pacientes %>% 
+  filter(id_paciente %in% (turnos_f %>%  distinct(id_paciente) %>% pull(id_paciente))) %>% # solo pacientes que estan en base de turnos
+  mutate(
+    date_nacimiento = as_date(fecha_nacimiento),
+    edad            = get_edad(date_nacimiento), # calculo edad de cada paciente para piramide
+    grupo_edad      = get_grupo_edad(edad), # asigno grupo etario
+    grupo_edad_fct  = fct_relevel(fct_relevel(factor(grupo_edad), "100+", after = Inf ), "5-9", after = 1) # ordeno factor
+  )
+
+```
+
+# Población
+
+En este período, **`r nrow(pacientes_f)` vecinos** solicitaron -por lo menos- un turno.
+
+## Por edad y género
+
+```{r, piramide, fig.align = "center", fig.lp="", fig.cap = fig_caption("piramide")}
+
+pacientes_f %>%
+  count(grupo_edad_fct, genero, name = "N") %>% 
+  filter(!is.na(grupo_edad_fct)) %>% 
+  mutate(
+    porcentaje   =case_when(genero == "M" ~ -(N / sum(N))*100,
+                              TRUE ~ (N / sum(N))*100),
+    genero_fct   = factor(genero, levels = c("M", "F"), labels = c("Masculino","Femenino")),
+    tooltip      = glue("{genero_fct}<br>{grupo_edad_fct} años<br><b>{round(abs(porcentaje), 2)}%</b>")) %>% 
+  
+  plot_ly(x = ~porcentaje,
+          y = ~grupo_edad_fct, 
+          type = "bar",
+          orientation = "h",
+          transforms = list(
+            list(
+              type = 'groupby',
+              groups = ~genero_fct,
+              styles = list(
+                list(target = "Masculino", value = list(marker = list(color = colores_genero[1]))),
+                list(target = "Femenino", value = list(marker = list(color = colores_genero[2])))
+              )
+            )
+          ),
+          text = ~tooltip,
+          hoverinfo = 'text'
+  ) %>% 
+  layout(
+    autosize   = TRUE,
+    paper_bgcolor='transparent',
+    plot_bgcolor ='transparent',
+    barmode    = "overlay",
+    margin     = list(pad = 20),
+    legend     = list(orientation = "v", x = 1.05, y = 0.95, title = list(text = "Género"), 
+                      font = list(size = 14), traceorder = "reversed"),
+    showlegend = TRUE,
+    bargap     = 0.2,
+    font       = list(size = 12),
+    xaxis      = list(title = "% de pacientes",
+                      tickmode = 'array',
+                      tickvals = seq(-10,10,5),
+                      ticktext = as.character(abs(seq(-10,10,5)))
+    ),
+    yaxis      = list(title = list(text = "Grupo etario (años)", standoff = 40))
+  )
+
+```
+
+-   La mayor parte de los pacientes son niños/as de **entre 5 y 9 años** de edad.
+-   Las **mujeres de 20 años en adelante** usan el sistema -solicitando al menos un turno- **más que los varones** de esa misma franja etaria.
+
+
+## Por comuna de origen
+
+```{r, geo_comunas, include=FALSE}
+
+comunas = 
+  st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/comunas/CABA_comunas.geojson") %>% 
+  mutate(COMUNAS = as.factor(COMUNAS))
+
+```
+
+```{r, data_mapa, include=FALSE}
+
+data_comunas =
+  left_join(comunas, 
+            pacientes_f %>% 
+              count(departamento, genero) %>% 
+              pivot_wider(names_from = "genero",names_prefix = "n_", values_from = "n") %>% 
+              mutate(total = n_F + n_M) %>% 
+              mutate(
+                porcentaje = round((total/sum(total))*100,1),
+                porcent_F  = round((n_F/total)*100,1),
+                porcent_M  = 100-porcent_F,
+                COMUNAS    = as.factor(str_remove(departamento, "comuna "))
+              ) %>% 
+              select(-departamento),
+            by = "COMUNAS") %>% 
+  group_by(COMUNAS) %>% 
+  mutate(
+    gen_plot = make_html_plot(porcent_M),
+    labels = HTML(glue("<span style= 'font-size: large;'>Comuna <b>{COMUNAS}</b></span><br>
+                       <span style= 'font-size: large;'><b>{porcentaje}%</b></span> del total de pacientes<br>
+                       {gen_plot}")),
+    centroide_LON = st_coordinates(st_centroid(geometry))[ , 1],
+    centroide_LAT = st_coordinates(st_centroid(geometry))[ , 2]
+  )
+          
+```
+
+```{r mapa_comuna, fig.align= "center", fig.lp="", fig.cap = fig_caption("mapa_comuna")}
+
+pal = colorNumeric("Purples", domain = data_comunas$porcentaje)
+
+data_comunas %>%
+leaflet(options = leafletOptions(preferCanvas = TRUE)) %>%
+  addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
+  setView(lng = -58.44, lat = -34.62, zoom = 11) %>%
+  addPolygons(
+    color = "#444444",
+    dashArray = "3",
+    weight = 1,
+    smoothFactor = 0.5,
+    fillOpacity = 0.75,
+    fillColor = ~pal(porcentaje),
+    highlightOptions = highlightOptions(color = "white",
+                                        weight = 2,
+                                        dashArray = "",
+                                        fillOpacity = 0.9,
+                                        bringToFront = TRUE),
+    popup = ~labels,
+    popupOptions =
+      labelOptions(
+        style = list("font-weight" = "normal",
+                     padding = "2px 5px"),
+        textsize = "14px",
+        direction = "top")
+  ) %>%
+  addLabelOnlyMarkers(
+             lng = ~centroide_LON, lat = ~centroide_LAT,
+             label = ~COMUNAS,
+             labelOptions = labelOptions(noHide = TRUE, 
+                                         textOnly = TRUE,
+                                         textsize = "11px",
+                                         direction = "center" )) %>% 
+  addLegend("bottomright",
+            pal= pal,
+            values = ~porcentaje,
+            title = "% de pacientes",
+            labFormat = labelFormat(suffix = " %"),
+            opacity = 0.75)
+
+```
+
+La mayoría de los vecinos que usan el sistema de turnos residen en las comunas de la **zona sur de CABA**.
+
+# Descripción del ausentismo
+
+En total, se otorgaron **`r nrow(turnos_f)` turnos**.
+
+
+```{r data_turnos, include=FALSE}
+# hay id_turno repetido -96091 idturno unicos- (y no refieren al mismo pac / efector)...no afecta porque considero que CADA FILA es un turno unico
+
+data_turnos =
+  turnos_f %>% 
+  mutate(id_efector_fct = factor(id_efector)) %>% 
+  left_join(., efectores %>% 
+              mutate(id_efector_fct = factor(id_efector),
+                     id_ap_fct = factor(id_area_programatica)) %>% 
+              select(-id_efector),
+            by = "id_efector_fct") %>% 
+  left_join(., ap %>% 
+              mutate(id_ap_fct = factor(id_area_programatica)),
+            by = "id_ap_fct", suffix = c("_ef","_ap")) %>% 
+  mutate(
+    abreviatura_ef = str_replace_all(abreviatura_ef, pattern = c(" BARRIO ILLIA" = "", " SAN JOSE" = ""," ZAVALETA"="")),
+    ef_fct = fct_reorder(factor(abreviatura_ef),.x = parse_number(abreviatura_ef), .fun = min) # reordeno factor
+         )
+           
+
+```
+## Turnos otorgados
+
+### Global, en el tiempo
+```{r timeline_turnos, fig.align= "center", fig.lp="", fig.cap = fig_caption("timeline_turnos")}
+
+data_plot_turnos=
+  data_turnos %>% 
+  count(date_otorgo) %>% 
+  mutate(turnos_roll = zoo::rollmean(x = n,fill = NA, k = 7,align = "center"),
+         tooltip = glue("<b>{round(turnos_roll)}</b> turnos<br>{date_otorgo}")) %>%
+  filter(!is.na(turnos_roll))
+  
+plot_turnos = 
+  data_plot_turnos %>% 
+  ggplot(aes(x = date_otorgo, y = turnos_roll, color = turnos_roll))+
+  geom_point(alpha = 1, size = 1.5)+
+  geom_vline(data = .%>% filter(str_detect(date_otorgo, "12-24")), 
+             aes(xintercept = date_otorgo), lty = 2 , lwd = 0.5, color = "slategray")+
+  scale_color_gradient(high = "darkorchid", low = "darkgray", )+
+  scale_x_date(date_labels = "%m-%y", date_breaks = "1 month")+  
+  theme_void()+
+  theme(axis.text.x =element_text(angle=45, hjust=1, size= 10), 
+        axis.title.y  = element_text(angle = 90, size = 13),
+        axis.text.y = element_text(size = 12), 
+        legend.position = "none",
+        panel.grid.major.x = element_line(colour = "#ededed", size = 0.5)) +
+  labs(x="", y = "Turnos otorgados\n")
+
+ggplotly(plot_turnos) %>% 
+  style(text = data_plot_turnos$tooltip) %>% 
+   layout(
+    autosize   = TRUE,
+    paper_bgcolor='transparent',
+    plot_bgcolor ='transparent')
+
+```
+
+- La tendencia general es que la cantidad de turnos otorgados aumenta en este período.
+- Hay ***estacionalidad*** (ciclos dentro de esta tendencia general).
+  - En períodos de **vacaciones** (Julio y Enero) y/o vísperas de **feriados**.
+   - Por ej., en *nochebuena*, en general **cae** la cantidad de turnos otorgados.
+- Hay una fuerte caída en **Diciembre 2018**.
+
+### Por efector
+
+```{r timeline_turnos_ef, fig.align= "center", fig.lp="", fig.height= 7.5, fig.width=8.5, fig.cap = fig_caption("timeline_turnos_ef")}
+
+data_turnos_ef = 
+  data_turnos %>% 
+  count(date_otorgo, ef_fct, abreviatura_ap) %>% 
+  group_by(ef_fct) %>% 
+  arrange(date_otorgo,.by_group = TRUE) %>% 
+  mutate(
+    abrev_ap_short = str_replace(abreviatura_ap,pattern = "HOSP. ",""),
+    tooltip = glue("<b>{n}</b> turnos<br>{date_otorgo}<br>
+                        <b>{ef_fct}</b><br>
+                        A.P.: <b>{abrev_ap_short}</b>")) %>%
+  ungroup() 
+
+plot_turnos_ef = 
+  data_turnos_ef %>% 
+  ggplot(aes(x = date_otorgo, y = n, color = abrev_ap_short))+
+  scale_x_date(date_labels = "%m-%y", date_breaks = "1 year")+  
+  geom_smooth(method = "loess", lwd = .8, se = FALSE) +
+  facet_wrap(~ef_fct)+
+  coord_cartesian(ylim = c(0,30))+
+  theme_void()+
+   theme(axis.text.x = element_text(angle=45, hjust=1, vjust = .5 ,size= 8), 
+        axis.text.y = element_text(size = 8), 
+        legend.text = element_text(size = 7),
+        panel.grid.major.x = element_line(colour = "#ededed", size = 0.5)) +
+  labs(x="", y = "", color = "")
+
+ggplotly(plot_turnos_ef, tooltip = "") %>% 
+  layout(
+    showlegend = TRUE,
+    legend = list(y = 0.5, font = list(size = 10), title = list(text = "Area<br>programática", font = list(size = 12))),
+    autosize   = TRUE,
+    paper_bgcolor='transparent',
+    plot_bgcolor ='transparent')
+
+
+```
+
+*Nota: haciendo doble-click sobre el nombre de cualquier área programática, se seleccionan las líneas de los efectores de ese área.*
+
+Para la mayoría de los efectores, se observa la **suba general** de turnos otorgados, aunque
+
+- Algunos efectores otorgaron más turnos en general (por ej., CESAC 3, CESAC 26, CESAC 34).
+
+- Otros efectores otorgaron pocos turnos durante menos tiempo (por ej., CESAC 20, CESAC 37, CESAC 47).
+
+## Ausentismo
+
+```{r}
+ausent_total=
+  data_turnos %>% 
+  count(presente_al_turno) %>% 
+  mutate(propor = round(n/sum(n)*10)) %>% 
+  pull(propor)
+
+id_ausent_total = 
+  data_turnos %>% 
+  group_by(id_paciente) %>% 
+  summarize(naus = sum(presente_al_turno=="No")) %>% 
+  count(naus == 0) %>% 
+  mutate(propor = round(n/sum(n)*(10/3))) %>% 
+  pull(propor)
+
+colores_ausent = c("#FF7F7F", "#13B3AC")
+
+pacientes_ausentes = pmap_chr(list(tipo = "fas fa-user-alt", 
+                                   color = c(rep(colores_ausent[1], id_ausent_total[1]),
+                                             rep(colores_ausent[2], id_ausent_total[2]))),
+                              make_iconos)
+
+turnos_ausentes = pmap_chr(list(tipo = "fas fa-briefcase-medical", 
+                                   color = c(rep(colores_ausent[1], ausent_total[1]),
+                                             rep(colores_ausent[2], ausent_total[2]))),
+                              make_iconos)
+
+```
+- Aproximadamente, **`r id_ausent_total[1]` de cada 3 vecinos** se **ausentó** a, por lo menos, *un turno*.        `r paste(pacientes_ausentes, collapse="  ")`
+
+- En promedio, **`r ausent_total[1]` de cada 10 turnos** son **ausentados**.        `r paste(turnos_ausentes, collapse = "  ")`
+
+### Global, en el tiempo
+
+```{r timeline_ausentismo, fig.align= "center", fig.lp="", fig.cap = fig_caption("timeline_ausentismo")}
+
+data_plot_ausent=
+  data_turnos %>% 
+  group_by(date_otorgo) %>% 
+  summarize(porcentaje = sum(presente_al_turno=="No")/n()*100) %>% 
+  ungroup() %>% 
+  mutate(
+    turnos_roll = zoo::rollmean(x = porcentaje,fill = NA, k = 7,align = "center"),
+    tooltip = glue("<b>{round(turnos_roll,1)}%</b><br>{date_otorgo}")) %>% 
+  filter(!is.na(turnos_roll))
+
+
+plot_ausent = 
+  data_plot_ausent %>% 
+  ggplot(aes(x = date_otorgo,  y = turnos_roll, color = turnos_roll))+
+  scale_x_date(date_labels = "%m-%y", date_breaks = "1 month")+  
+  geom_point(size = 1.5)+
+  scale_color_gradient(low = colores_ausent[2], high = colores_ausent[1])+
+  theme_void()+
+  theme(axis.text.x        = element_text(angle=45, hjust=1, size= 10), 
+        axis.title.y       = element_text(angle = 90, size = 13),
+        axis.text.y        = element_text(size = 12), 
+        legend.position    = "none",
+        panel.grid.major.x = element_line(colour = "#ededed", size = 0.5)) +
+  labs(x="", y = "Ausentismo (%)\n")
+
+ggplotly(plot_ausent) %>% 
+  style(text = data_plot_ausent$tooltip)%>% 
+   layout(
+    autosize   = TRUE,
+    paper_bgcolor='transparent',
+    plot_bgcolor ='transparent')
+
+```
+
+El ausentismo cayó sostenidamente hasta fines de 2018:
+
+- De aprox. **4 de cada 10** turnos ausentes en Junio 2016, se llegó a casi **1 de cada 10** turnos ausentes en Noviembre 2018.
+
+- En **Diciembre 2018** no sólo hay [**menos turnos otorgados**](#global-en-el-tiempo), sino que aprox. **la mitad** de estos turnos son **ausentados**.
+
+
+# Condicionantes del ausentismo
+
+```{r turnos_prog, include=FALSE}
+turnos_prog =
+  data_turnos %>% 
+  mutate(date_turno         = as_date(fecha_turno),
+         tiempo_al_turno    = difftime(date_turno, date_otorgo,units = "days"),
+         tipo_turno         = ifelse(tiempo_al_turno=="0", "espontáneo", "programado"),
+        tiempo_al_turno_num = as.numeric(tiempo_al_turno)) %>% 
+  filter(tiempo_al_turno_num >= 0) # hay 3 turnos con fecha de otorgamiento posterior a la cita...
+
+```
+El tiempo entre el otorgamiento y la cita ---***tiempo al turno***--- puede ser un factor que se relacione con el ausentismo.
+
+Para evaluar este factor, primero categorizamos los turnos en:
+
+- **Programado**: 1 día o más entre fecha de otorgamiento y cita
+- **Espontáneo**: menos de 1 día entre fecha de otorgamiento y cita
+
+## Ausentismo por tipo de turno
+
+```{r plot_turnos_prog, fig.align= "center", fig.lp="",fig.height = 2.5, fig.cap = fig_caption("plot_turnos_prog")}
+
+turnos_prog%>% 
+  count(tipo_turno, presente_al_turno) %>% 
+  left_join(., turnos_prog%>% 
+              count(tipo_turno) %>% 
+              mutate(porcent = round(n/sum(n)*100,1)) %>% select(-n), by= "tipo_turno" ) %>% 
+  group_by(tipo_turno) %>% 
+  mutate(porcentaje = n/sum(n)*100,
+         tick = glue("<b>{porcent}%</b> ({sum(n)})  <br>turnos <b>{tipo_turno}s</b>  ")
+  ) %>% 
+  ungroup() %>% 
+  pivot_wider(id_cols = -n,names_from = "presente_al_turno", values_from = "porcentaje") %>% 
+  mutate(tooltip_no = glue("<b>{round(No,1)}%</b><br>ausente"),
+         tooltip_si = glue("<b>{round(Si,1)}%</b><br>presente")) %>% 
+  
+  plot_ly(., x = ~No, y = ~tick, type = 'bar', orientation = 'h', 
+          name = '% Ausente',text = ~tooltip_no, hoverinfo = 'text',
+          marker = list(color = colores_ausent[1], 
+                        line = list(color = 'white',
+                                    width = 1))) %>% 
+  add_trace(x = ~Si, name = '% Presente',text = ~tooltip_si,
+            marker = list(color = colores_ausent[2],
+                          line = list(color = 'white',
+                                      width = 1))) %>% 
+  layout(barmode = 'stack',
+         autosize   = TRUE,
+         title  = paste0("<b>",nrow(turnos_prog),"</b> turnos otorgados"),
+         paper_bgcolor='transparent',
+         plot_bgcolor ='transparent',
+         font       = list(size = 12),
+         xaxis = list(title = "",
+                      zeroline = FALSE,
+                      showline = FALSE,
+                      showticklabels = FALSE,
+                      showgrid = FALSE),
+         bargap     = 0.6,
+         yaxis = list(title = "")
+  )
+
+```
+
+- Se otorgó casi la misma cantidad de turnos programados y espontáneos.
+
+- El **ausentismo es mayor** en los turnos **programados**.
+
+
+
+## En el tiempo
+
+```{r prog_timeline, fig.align= "center", fig.lp="",fig.height = 2.5, fig.cap = fig_caption("prog_timeline")}
+
+data_plot_turnos_prog = 
+  turnos_prog %>% 
+  group_by(tipo_turno, date_otorgo) %>% 
+  summarize(porcent = (sum(presente_al_turno=="No")/n() )*100 ) %>% 
+  mutate(turnos_roll = zoo::rollmean(x = porcent,fill = NA, k = 7,align = "center"),
+         tooltip = glue("<b>{round(turnos_roll,1)}%</b><br>{tipo_turno}<br>{date_otorgo}")) %>% 
+  ungroup() 
+
+plot_turnos_prog =
+  data_plot_turnos_prog %>% 
+  filter(!is.na(turnos_roll)) %>% 
+  ggplot(aes(x = date_otorgo, y = turnos_roll,lty = tipo_turno))+
+  scale_x_date(date_labels = "%m-%y", date_breaks = "1 month")+  
+  geom_smooth(method = lm, formula = y~splines::bs(x, 15), 
+              se = FALSE, color = "slategray", lwd = 0.75)+
+  scale_linetype_manual(values = c(4,1))+
+  theme_void()+
+  guides(color = FALSE, shape = FALSE)+
+  theme(axis.text.x =element_text(angle=45, hjust=1, size= 10), 
+        axis.title.y  = element_text(angle = 90, size = 13),
+        axis.text.y = element_text(size = 12),
+        panel.grid.major.x = element_line(colour = "#ededed", size = 0.5)) +
+  labs(x="", y = "Ausentismo (%)\n", lty = "Tipo de turno")
+
+ggplotly(plot_turnos_prog) %>% 
+  style(text = "") %>%
+   layout(
+     autosize   = TRUE,
+     legend = list(orientation = 'h', x=0.35, y = 1.1, font = list(size = 13)),
+    paper_bgcolor='transparent',
+    plot_bgcolor ='transparent')
+
+```
+
+- El [pico de ausentismo de Diciembre 2018](#global-en-el-tiempo-1) se debe casi exclusivamente a ausencia a turnos **programados**.
+
+- Siempre hubo **más ausentismo a turnos programados** que a espontáneos.
+
+
+Analizamos ahora solo **turnos programados**, que son los que muestran mayor ausentismo.
+
+## Turnos programados
+
+### En el tiempo y por efector
+
+```{r ausent_prog_ef, fig.align= "center", fig.lp="",fig.height= 7.5, fig.width=8.5, fig.cap = fig_caption("ausent_prog_ef")}
+
+plot_ausent_ef =
+  turnos_prog %>% 
+  filter(tipo_turno=="programado") %>% 
+  group_by(date_otorgo, ef_fct, abreviatura_ap) %>% 
+  summarize(porcent = (sum(presente_al_turno=="No")/n() )*100 ) %>%
+  group_by(ef_fct) %>%
+  mutate(turnos_roll = zoo::rollmean(x = porcent,fill = NA, k = 7,align = "center") ) %>%
+  ungroup() %>% 
+  mutate(abrev_ap_short = str_replace(abreviatura_ap,pattern = "HOSP. ","")) %>% 
+
+  ggplot(aes(x = date_otorgo, y = turnos_roll, color = abrev_ap_short))+
+  scale_x_date(date_labels = "%m-%y", date_breaks = "1 year")+  
+  geom_smooth(method = lm, formula = y~splines::bs(x, 10), 
+              se = FALSE, lwd = .8)+
+  coord_cartesian(ylim= c(0,100))+
+  facet_wrap(~ef_fct)+
+  theme_void()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust = .5 ,size= 8), 
+        axis.text.y = element_text(size = 8), 
+        legend.text = element_text(size = 7),
+        panel.grid.major.x = element_line(colour = "#ededed", size = 0.5)) +
+  labs(x="", y = "", color = "")
+
+
+ggplotly(plot_ausent_ef, tooltip = "") %>% 
+  layout(
+    legend = list(y = 0.5, font = list(size = 10), title = list(text = "Area<br>programática", font = list(size = 12))),
+    autosize   = TRUE,
+    paper_bgcolor='transparent',
+    plot_bgcolor ='transparent')
+
+```
+*Nota: no hubo turnos programados para el CESAC 25.*
+
+- En la mayoría de los efectores se observa el [alza de ausentismo en Diciembre 2018](#en-el-tiempo).
+- No obstante, hay **heterogeneidad** en los niveles generales de ausentismo y en la dinámica temporal del ausentismo.
+  - Por ej., en los **CESAC 9 y 15** el **ausentismo es generalmente alto** (mayor al 50%).
+
+### Por área programática
+
+```{r data_mapa_ap, include = FALSE}
+
+areas_prog =   
+  st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/areas-hospitalarias/areas-hospitalarias.csv") %>% 
+  select(-WKT) %>% 
+  mutate(id_area_programatica = factor(c(28, 999, 27, 26, 31, 32, 34, 25, 30, 35, 33, 24)))
+
+data_ap=
+  left_join(areas_prog,
+            turnos_prog %>% 
+              filter(tipo_turno=="programado") %>% 
+              group_by(id_area_programatica_ap,abreviatura_ap) %>% 
+              summarize(porcent = (sum(presente_al_turno=="No")/n() )*100 ) %>% 
+              mutate(id_area_programatica = factor(id_area_programatica_ap)),
+            by = "id_area_programatica"
+  ) %>% 
+  group_by(id_area_programatica) %>% 
+  mutate(
+    labels = HTML(glue("<span style= 'font-size: large;'><b>{abreviatura_ap}</b></span><br>
+                       <span style= 'font-size: medium;'>Ausentismo: <b>{round(porcent,1)}%</b></span><br>")),
+    centroide_LON = st_coordinates(st_centroid(geometry))[ , 1],
+    centroide_LAT = st_coordinates(st_centroid(geometry))[ , 2]
+  )
+
+
+```
+
+```{r mapa_ap, fig.align= "center", fig.lp="", fig.cap = fig_caption("mapa_ap")}
+
+pal_ap = colorNumeric(rev(colores_ausent), domain = data_ap$porcent)
+
+data_ap %>%
+  filter(!is.na(porcent)) %>% 
+leaflet(options = leafletOptions(preferCanvas = TRUE)) %>%
+  addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
+  setView(lng = -58.44, lat = -34.62, zoom = 11) %>%
+  addPolygons(
+    color = "#444444",
+    dashArray = "3",
+    weight = 1,
+    smoothFactor = 0.5,
+    fillOpacity = 0.75,
+    fillColor = ~pal_ap(porcent),
+    highlightOptions = highlightOptions(color = "white",
+                                        weight = 2,
+                                        dashArray = "",
+                                        fillOpacity = 0.9,
+                                        bringToFront = TRUE),
+    popup = ~labels,
+    popupOptions =
+      labelOptions(
+        style = list("font-weight" = "normal",
+                     padding = "2px 5px"),
+        textsize = "14px",
+        direction = "top")
+  ) %>%
+  addLabelOnlyMarkers(
+             lng = ~centroide_LON, lat = ~centroide_LAT,
+             label = ~paste("AP",id_area_programatica),
+             labelOptions = labelOptions(noHide = TRUE, 
+                                         textOnly = TRUE,
+                                         textsize = "11px",
+                                         direction = "center" )) %>% 
+  addLegend("bottomright",
+            pal= pal_ap,
+            values = ~porcent,
+            title = "% de ausentismo",
+            labFormat = labelFormat(suffix = " %"),
+            opacity = 0.75)
+```
+
+*Nota: no hay datos de turnos programados para el AP del Hospital Zubizarreta*
+
+- El area programática del **Hospital Argerich (AP 24)** es la principal afectada por el ausentismo.
+  - Casi **2 de cada 3** turnos programados son **ausentados**.
+  - Esto es consistente con [el alto ausentismo en los CESAC 9, 15 y 41](#en-el-tiempo-y-por-efector).
+ 
+- También hay ausentismo considerable en las AP 28, 31 y 35.
+
+Podemos distinguir a los turnos programados según el *tiempo al turno* para entender su relación con el ausentismo a estos turnos.
+
+### Ausentismo según tiempo al turno
+
+```{r distribucion_tat, fig.align= "center", fig.lp="",fig.height = 4, fig.cap = fig_caption("distribucion_tat")}
+distrib_tat = 
+  turnos_prog %>% 
+  count(tiempo_al_turno_num,presente_al_turno) %>%
+  mutate(tipo = case_when(presente_al_turno == "Si"~"Presente",
+                          TRUE ~ "Ausente")) %>% 
+  filter(tiempo_al_turno_num>0,tiempo_al_turno_num<=70) %>% # hay pocos datos de mas de 70 dias, y dificultaban el escaleo del grafico
+  ungroup()
+
+
+distrib_tat_plot =
+  distrib_tat %>% 
+  ggplot(aes(tiempo_al_turno_num,n, fill = tipo))+
+  geom_col(color = "white")+
+  labs(x="\nTiempo al turno programado (días)", y = "Cantidad de\nturnos programados\n", fill = "")+
+  scale_fill_manual(values = colores_ausent)+
+  scale_x_continuous(breaks = seq(0,70,7))+
+  theme_void()+
+  theme(axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 15),
+        axis.title.y = element_text(angle = 90),
+        panel.grid.major.x = element_line(colour = "#ededed", size = 0.5)) 
+  
+ggplotly(distrib_tat_plot)%>%
+  style(text= "", hoverinfo = "text") %>%
+  layout(
+    autosize   = TRUE,
+    paper_bgcolor='transparent',
+    plot_bgcolor ='transparent')
+
+```
+
+- La mayoria de los turnos se programan con **menos de 1 mes de anticipación**.
+- La cantidad de turnos programados **presentes** cae a medida que el tiempo al turno es mayor.
+- La cantidad de **ausentes** se mantiene relativamente estable hasta *tiempos al turno* de 1 mes.
+- Hay *periodicidad*.
+  - Se suelen otorgar turnos para el día siguiente o para **semanas exactas** siguientes.
+
+Para entender mejor cómo se relacionan el tiempo al turno y el ausentismo, podemos observar **cómo cambia el ausentismo según la cantidad de días al turno**.
+
+
+```{r ausent_tiempo, fig.align= "center", fig.lp="",fig.height = 4, fig.cap = fig_caption("ausent_tiempo")}
+data_tat =
+  turnos_prog %>% 
+  filter(tiempo_al_turno_num>0, tiempo_al_turno_num<=70) %>% 
+  group_by(tiempo_al_turno_num) %>%
+  summarize(porcent = (sum(presente_al_turno=="No")/n() )*100,
+            N = n()) %>% 
+  mutate( tooltip = glue("<b>{round(porcent,1)}%</b>
+                         <b>{tiempo_al_turno_num}</b> días al turno
+                         Basado en <b>{N}</b> {ifelse(N==1,'dato','datos')}"))
+
+plot_tat =
+  data_tat%>%
+  ggplot(aes(x = tiempo_al_turno_num, y = porcent, alpha = log10(N), size = log10(N), color = porcent) )+
+  geom_point( shape = 16)+
+  theme_void()+
+  guides(alpha = FALSE, size = FALSE) +
+  scale_alpha_continuous(range = c(0.25,0.75))+
+  scale_x_continuous(breaks = seq(0,70,10))+
+  theme(axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 13),
+        axis.title.y = element_text(angle = 90),
+        panel.grid.major.x = element_line(colour = "#ededed", size = 0.1)) +
+  labs(x="\nTiempo al turno programado (días)", y = "Ausentismo (%)\n", color = "Ausentismo (%)")+
+  scale_color_gradient(low = colores_ausent[2], high = colores_ausent[1])
+  
+
+ggplotly(plot_tat)%>%
+  style(text = data_tat$tooltip) %>%
+  layout(
+    legend = list(y = .7, font = list(size = 8)),
+    autosize   = TRUE,
+    paper_bgcolor='transparent',
+    plot_bgcolor ='transparent')
+
+
+```
+
+- Para turnos con tiempo al turno de hasta aprox. 2 meses (70 días), **mayor tiempo al turno implica mayor ausentismo**.
+  - El ausentismo aumenta aprox. 10 puntos cada 20 días.
+- Para turnos más lejanos en el tiempo, es incierto (pocos datos y tendencias extremas).
+
+
+# Resumen
+
+Período evaluado: **06/2016 - 12/2018** `r fa("far fa-calendar", fill = "darkslategray", height = "17px")`.
+
+**Población**
+
+- Casi [130 mil vecinos](#población) solicitaron turnos para el sistema de salud público de CABA.
+  - Mayormente pacientes de [5 a 9 años y mujeres de más de 20 años](#por-edad-y-género)
+  - La mayoría de la [zona sur de CABA](#por-comuna-de-origen).
+
+**Turnos otorgados**
+
+- Se otorgaron casi [300 mil turnos](#descripción-del-ausentismo).
+  - El volúmen de turnos otorgados [creció hasta Noviembre 2018](#global-en-el-tiempo).
+    - Con períodos cíclicos con caídas atribuíbles a vacaciones y feriados.
+  - En Diciembre 2018 la cantidad de turnos otorgados cayó abruptamente.
+
+**Ausentismo**
+
+- En promedio, [2 de cada 10 turnos son ausentados](#ausentismo).
+- En el tiempo, [el ausentismo cayó globalmente hasta Noviembre 2018](#global-en-el-tiempo-1)
+  - En Diciembre 2018 la cantidad de turnos ausentados aumentó abruptamente.
+
+**Condicionantes**
+
+- El [ausentismo es mayor en los turnos programados que en los espontáneos](#ausentismo-por-tipo-de-turno).
+  - Esto fue cierto [durante todo el período estudiado](#en-el-tiempo).
+  - El [aumento abrupto de ausentismo en Diciembre 2018](#global-en-el-tiempo-1) se debe a ausencia a turnos programados.
+  - El área programática del Hospital Argerich es donde se registró el [mayor nivel de ausentismo a turnos programados](#por-área-programática).
+  - Globalmente, cuando el tiempo al turno programado es de hasta aprox. 2 meses, [mayor tiempo al turno implica mayor ausentismo](#ausentismo-según-tiempo-al-turno).
+
+# Conclusión
+
+Los resultados expuestos son útiles para elaborar posibles estrategias que reduzcan el ausentismo.
+
+El problema principal del ausentismo engloba a los turnos ***programados***, es decir, los turnos que no son para atención en el mismo día de solicitado.
+
+- Considerando que hay un foco particular de ausentismo en el área programática del Hospital Argerich (AP 24), y que éste área solapa geográficamente con el área de residencia de la mayor parte de los vecinos que utilizan el sistema de turnos, se podría implementar un **sistema de recordatorio de turnos**, específico para pacientes del AP 24 (y, en lo posible, del AP 28 también). 
+
+  - Este sistema podría ejecutarse a través de los servicios de alerta y atención al vecino ya instalados en el sector público (por ej., [Boti](https://www.buenosaires.gob.ar/jefaturadegabinete/innovacion/boti)).
+  
+
+- Además, al momento de programar un turno, sería aconsejable **recordar al vecino de la proximidad del posible turno a vísperas de feriados y períodos de vacaciones**.
+
+- Por último, considerando que el ausentismo está directamente asociado al tiempo al turno programado, podría **limitarse la fecha máxima de programación del turno** (a, por ej. , 30 días del día de solicitud).
+
+
+***
+*Nota: se podría ampliar este análisis evaluando también*
+
+*- La proximidad de la comuna de residencia del vecino al efector (menor proximidad puede implicar mayor ausentismo (por ej., por problemas de transporte).*
+  
+*- El ausentismo por edad del paciente (por ej., vecinos de mayor edad pueden tener más dificultades para acercarse físicamente al efector).*
+  
