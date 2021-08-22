@@ -1,4 +1,4 @@
-# Absenteeism Interactive Report 🏥
+# 🏥 Absenteeism Interactive Report
 
 Interactive report (in Spanish) that describes [**absenteesim**](https://en.wikipedia.org/wiki/Absenteeism) -patients missing their appointments- in the public healthcare system of Buenos Aires City, Argentina :argentina:.
 
